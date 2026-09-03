@@ -4,431 +4,525 @@
 
 **nirgen** is a Python/PyTorch implementation of the Neurotransmitter Ion Receptor Glial Endocannabinoid Network Models an **Ionic Neural Network (INN)**: a neural computation framework in which computation is represented through the discrete movement, accumulation, partitioning, and release of ionic resources within a bounded cellular system.
 
-Rather than representing a neuron primarily as a sequence of matrix multiplications and nonlinear activation functions, NIRGEN represents a computational unit as a constrained physical system.
+The fundamental computational unit is an **ion**.
 
-The fundamental computational resource is an **ion**.
-
-An INN contains an extracellular compartment (`ecto`), an intracellular compartment (`endo`), input and output patches, receptor inventories, vesicle inventories, and a set of fixed stoichiometric and geometric constraints. Computation occurs through a deterministic sequence of discrete state transitions.
-
-The repository currently implements the core **single-cell, six-operation INN forward-pass architecture** described in the accompanying NIRGEN work.
-
----
-
-## Conceptual Overview
-
-A conventional neural network generally represents a computation as something resembling
-
-$$
-y = f(Wx+b).
-$$
-
-NIRGEN instead represents computation through changes in a bounded state:
-
-$$
-S^{(t)}
-\rightarrow
-S^{(t+1)}
-$$
-
-where the state consists of discrete ionic populations distributed across compartments and patches.
-
-The model is therefore closer to a constrained dynamical system than to a conventional feed-forward neural network.
-
-At a high level:
+Rather than representing computation exclusively through unconstrained floating-point transformations such as
 
 ```text
-                    AMBIENT ION POOL
-                           │
-                           ▼
-                 ┌───────────────────┐
-                 │   ECTO COMPARTMENT │
-                 │                   │
- Input ─────────►│  Input Patches    │
-                 │       │           │
-                 └───────┼───────────┘
-                         │
-                  receptor activation
-                         │
-                         ▼
-                 ┌───────────────────┐
-                 │  ENDO COMPARTMENT │
-                 │                   │
-                 │ intracellular     │
-                 │ ion population     │
-                 └───────┬───────────┘
-                         │
-                       diffusion
-                         │
-                         ▼
-                 ┌───────────────────┐
-                 │   OUTPUT PATCHES  │
-                 │                   │
-                 │ vesicle fusion    │
-                 └───────┬───────────┘
-                         │
-                         ▼
-                    ECTO RELEASE
-                         │
-                         ▼
-                       OUTPUT
+y = f(Wx + b)
 ```
 
-The important distinction is that the network does not treat the intermediate values simply as abstract activations. They are populations of a conserved resource subject to capacity, availability, and stoichiometric constraints.
+an INN represents a computational state as populations of ions distributed across an extracellular environment, intracellular environment, membrane/input patches, and output patches.
+
+Computation occurs through a sequence of constrained state transitions involving:
+
+```text
+Input perturbation
+        ↓
+Stoichiometric partition
+        ↓
+Receptor activation
+        ↓
+Ion translocation
+        ↓
+Intracellular diffusion
+        ↓
+Output partition
+        ↓
+Vesicle activation
+        ↓
+Exocytosis
+        ↓
+Output readout
+```
+
+The current repository implements the core single-cell INN architecture using PyTorch.
 
 ---
 
-# The INN Computational Model
+# Model Architecture
 
-The current implementation uses a single-cell architecture with:
+The computational system can be visualized as:
 
-* `n` input patches
-* `m` output patches
-* extracellular (`ecto`) ionic populations
-* intracellular (`endo`) ionic populations
-* receptor inventories on input patches
-* vesicle inventories on output patches
-* fixed receptor thresholds
-* fixed translocation quanta
-* fixed vesicle thresholds
-* fixed extrusion quanta
-* fixed diffusion weights
-* α and β allocation coefficients
-* a membrane-side weighting parameter `sigma`
-
-The repository currently provides multiple ion/species configurations through the internal species registry.
-
-A model is constructed with:
-
-```python
-from nirgen.inn.model import INN
+```text
+                         AMBIENT ION POOL
+                                │
+                                │
+                                ▼
+              ┌─────────────────────────────────┐
+              │        EXTRACELLULAR            │
+              │             ECTO                │
+              │                                 │
+ Input ──────►│   Input Patch 1                 │
+              │        │                        │
+              │        │ receptor               │
+              │        ▼                        │
+              │   Input Patch 2                 │
+              │        │                        │
+              │        ▼                        │
+              └────────┼────────────────────────┘
+                       │
+                 ion translocation
+                       │
+                       ▼
+              ┌─────────────────────────────────┐
+              │       INTRACELLULAR             │
+              │            ENDO                 │
+              │                                 │
+              │      ionic population           │
+              │           │                     │
+              │           │ diffusion           │
+              │           ▼                     │
+              │     Output Patch 1              │
+              │     Output Patch 2              │
+              │           │                     │
+              └───────────┼─────────────────────┘
+                          │
+                    vesicle fusion
+                          │
+                          ▼
+              ┌─────────────────────────────────┐
+              │        EXTRACELLULAR            │
+              │          RELEASE                │
+              └──────────────┬──────────────────┘
+                             │
+                             ▼
+                           OUTPUT
 ```
 
-and instantiated as:
+For a publication-quality illustration, see `docs/inn_architecture.svg`.
 
-```python
-model = INN(
-    species="Na",
-    n=4,
-    m=2
-)
+The SVG can be embedded directly into this README:
+
+```html
+<p align="center">
+  <img
+    src="docs/inn_architecture.svg"
+    alt="NIRGEN Ionic Neural Network architecture"
+    width="900"
+  >
+</p>
 ```
 
-The exact available species and device presets are defined by the package registry.
+GitHub will render the SVG directly from the repository.
 
 ---
 
-# Six-Operation Forward Pass
+# Core State
 
-The current implementation follows a six-operation schedule.
+The INN maintains ionic populations across bounded compartments.
 
-## 1. Input perturbation
+The principal state variables are:
 
-The input modifies the extracellular ionic state of the input patches.
+* extracellular ionic population (`ecto`);
+* intracellular ionic population (`endo`);
+* input-patch populations;
+* output-patch populations;
+* boundary/engaged ionic material associated with receptor operation.
 
-The implementation converts the supplied input into a perturbation of the extracellular state using a Nernst-based transformation.
+The model is designed around discrete state transitions and constrained resource availability.
 
-Conceptually:
+The computational resource is not an abstract activation value. It is an ionic population subject to:
 
-$$
-x
-\rightarrow
-S_{\mathrm{ecto}}^{(1)}.
-$$
-
-The input therefore represents a perturbation to an ionic environment rather than simply becoming a vector of neuron activations.
+* availability;
+* compartment capacity;
+* receptor stoichiometry;
+* vesicle stoichiometry;
+* translocation constraints;
+* diffusion;
+* extracellular receiving capacity.
 
 ---
 
-## 2. Stoichiometric splitting
+# The Six-Operation Forward Pass
 
-The current ionic populations are divided into flux and activation sub-pools.
+The current implementation executes the INN computation as a fixed six-operation schedule.
 
-For the input side:
+## 1. Input Perturbation
 
-$$
-F_{\mathrm{ecto}}
-=
-\left\lfloor
-\alpha S_{\mathrm{ecto}}
-\right\rfloor
-$$
+The external input perturbs the extracellular ionic population of the input patches.
+
+The input is therefore interpreted as an environmental perturbation of the ionic system.
+
+```text
+input
+  ↓
+extracellular ionic state
+```
+
+---
+
+## 2. Stoichiometric Split — Input
+
+Each input patch divides its extracellular population into two sub-pools.
+
+The flux pool is:
+
+```text
+F_ecto = floor(alpha × S_ecto)
+```
+
+and the activation pool is:
+
+```text
+A_ecto = S_ecto - F_ecto
+```
+
+The activation pool supplies ions required to trigger receptor opening.
+
+The flux pool supplies ions available for translocation.
+
+---
+
+## 3. Receptor Activation and Translocation
+
+Each input patch contains a receptor inventory.
+
+The actual number of receptors that open during a forward pass is constrained by multiple simultaneous requirements:
+
+```text
+available receptors
+        +
+activation-ion availability
+        +
+flux availability
+        +
+receiving capacity
+```
+
+The effective receptor count is therefore the minimum of these constraints.
+
+The receptor type specifies:
+
+```text
+rth = activation threshold
+rq  = translocation quantum
+```
+
+where:
+
+* `rth` is the number of ions required to activate one receptor;
+* `rq` is the number of ions translocated per receptor opening.
+
+The receptor inventory itself is trainable.
+
+---
+
+## 4. Inward Diffusion
+
+Following receptor activity, ionic populations are distributed from the input patches to the output patches.
+
+The current implementation uses fixed diffusion fractions.
+
+These fractions determine how ionic material is distributed across the output geometry.
+
+Diffusion weights are **not learned parameters**.
+
+They are part of the fixed configuration of the computational system.
+
+---
+
+## 5. Stoichiometric Split — Output
+
+At the output patches, the intracellular population is again divided into activation and flux sub-pools.
+
+The output-side split uses:
+
+```text
+F_endo = floor(beta × S_endo)
+```
 
 and
 
-$$
-A_{\mathrm{ecto}}
-=
-S_{\mathrm{ecto}}-F_{\mathrm{ecto}}.
-$$
-
-The same principle is applied to the intracellular population using `beta`.
-
-The two sub-pools have different computational roles:
-
-* **activation ions** provide the material required to trigger receptors;
-* **flux ions** provide material available for translocation.
-
----
-
-## 3. Receptor activation and translocation
-
-Each input patch has a trainable receptor inventory.
-
-The number of receptors that can actually open is constrained simultaneously by:
-
-1. the number of receptors available;
-2. the activation ions available;
-3. the flux ions available;
-4. the available receiving capacity.
-
-The effective receptor count is therefore determined by a minimum over these constraints.
-
-Conceptually:
-
-$$
-r_e =
-\min
-\left\{
-r,\,
-\left\lfloor\frac{A}{\{r\}}\right\rfloor,\,
-\left\lfloor
-\frac{\sigma F_{\mathrm{ecto}}
-+(1-\sigma)F_{\mathrm{endo}}}
-{|[r]|}
-\right\rfloor,\,
-\left\lfloor
-\frac{\text{available capacity}}
-{|[r]|}
-\right\rfloor
-\right\}.
-$$
-
-When receptors open, ions are transferred across the membrane according to the receptor's translocation quantum.
-
-The implementation also tracks the activation material associated with receptor operation.
-
----
-
-## 4. Inward diffusion
-
-After receptor activation, the resulting intracellular and extracellular populations are distributed across the output patches.
-
-The current implementation uses fixed area/fraction-based diffusion weights.
-
-For example, the intracellular population entering an output patch is proportional to its output-patch weight:
-
-$$
-S_{l_o,\mathrm{endo}}
-=
-w_{l_o}
-\sum_{l_i}
-S_{l_i,\mathrm{endo}}.
-$$
-
-The diffusion weights are not learned by Adam.
-
-They are part of the fixed configuration of the INN.
-
----
-
-## 5. Output stoichiometric splitting
-
-The intracellular population at each output patch is again divided into:
-
-* a flux sub-pool;
-* an activation sub-pool.
-
-This provides the resources required for vesicle activation and subsequent extrusion.
-
----
-
-## 6. Vesicle fusion and exocytosis
-
-Each output patch has a trainable vesicle inventory.
-
-The number of vesicles that can fuse is constrained by:
-
-1. the available vesicles;
-2. the activation population required to trigger fusion;
-3. the available flux material and extracellular receiving capacity.
-
-Conceptually:
-
-$$
-V_e =
-\min
-\left\{
-V,\,
-\left\lfloor
-\frac{A_{\mathrm{endo}}}{\{V\}}
-\right\rfloor,\,
-\left\lfloor
-\frac{
-\min(F_{\mathrm{endo}},
-C_{\mathrm{ecto}}-S_{\mathrm{ecto}})
-}
-{[V]}
-\right\rfloor
-\right\}.
-$$
-
-A successful fusion event transfers the extrusion quantum back into the extracellular compartment.
-
-The final output is then read from the resulting extracellular state.
-
----
-
-# What Is Learned?
-
-The current implementation deliberately has a very small trainable parameter space.
-
-The trainable quantities are the **receptor and vesicle inventories**:
-
-$$
-r_{l_i}
-$$
-
-for input patches, and
-
-$$
-V_{l_o}
-$$
-
-for output patches.
-
-The underlying implementation stores continuous relaxation variables:
-
-```python
-model.r_tilde
-model.v_tilde
+```text
+A_endo = S_endo - F_endo
 ```
 
-while the actual forward computation uses discrete inventories derived from those values.
+The activation pool is used to trigger vesicle fusion.
 
-This permits gradient-based optimization despite the discrete nature of the physical model.
+The flux pool provides material available for extrusion.
 
-The forward computation therefore operates approximately as:
+---
+
+## 6. Vesicle Fusion and Exocytosis
+
+Each output patch contains a vesicle inventory.
+
+The actual number of vesicles that fuse is constrained by:
 
 ```text
-continuous parameters
-        │
-        ▼
- straight-through floor
-        │
-        ▼
- discrete receptor/vesicle inventories
-        │
-        ▼
- ionic state transitions
-        │
-        ▼
-      output
-        │
-        ▼
-       loss
-        │
-        ▼
-      Adam
-        │
-        └──────────► updated continuous parameters
+available vesicles
+        +
+activation-ion availability
+        +
+available extrusion material
+        +
+extracellular receiving capacity
 ```
+
+The vesicle type specifies:
+
+```text
+vth = fusion threshold
+vq  = extrusion quantum
+```
+
+where:
+
+* `vth` is the number of ions required to activate one vesicle;
+* `vq` is the number of ions released per fusion event.
+
+The resulting extracellular state is then used to produce the model output.
 
 ---
 
-# Basic Installation
+# Biophysical Registry
 
-Install directly from GitHub:
+The repository contains a registry of species-specific and device-specific parameters.
 
-```bash
-pip install git+https://github.com/drmylesgarveylabs/nirgen.git
+The registry is defined in:
+
+```text
+nirgen/inn/registry.py
 ```
 
-The repository is currently a lightweight PyTorch package.
+The current implementation defines the following global constants:
 
-For development:
+```python
+RHO = 2.30
+D_POOL_NM = 100_000.0
 
-```bash
-git clone https://github.com/drmylesgarveylabs/nirgen.git
-cd nirgen
+ION1 = math.floor(
+    RHO * math.pi * D_POOL_NM**2 / 4
+)
 
-pip install -e .
+PHI_T = 25.7
+Z_ION = 1
+
+NERNST_EPS_IONS = 1e-6
+NERNST_EXP_CLIP = 20.0
+
+INVENTORY_JITTER = 2.0
+INVENTORY_JITTER_REL = 0.05
+
+RTH_MIN, RQ_MIN, VTH_MIN, VQ_MIN = 5, 2, 5, 2
 ```
+
+These values provide the base physical/numerical configuration used by the model.
 
 ---
 
-# Basic Model Construction
+# Device Types
 
-A minimal INN can be created as follows:
+The current registry defines four biological/device presets:
+
+| Device type | Receptor threshold | Receptor quantum | Vesicle threshold | Vesicle quantum |
+| ----------- | -----------------: | ---------------: | ----------------: | --------------: |
+| Human       |                  8 |                4 |                 4 |               4 |
+| Mouse       |                  8 |                4 |                 4 |               4 |
+| Drosophila  |                  4 |                4 |                 2 |               4 |
+| C. elegans  |                  4 |                2 |                 2 |               2 |
+
+These values are represented in the registry as:
+
+```python
+DEVICE_TYPES = {
+    "Human": {
+        "rth": 8,
+        "rq": 4,
+        "vth": 4,
+        "vq": 4
+    },
+
+    "Mouse": {
+        "rth": 8,
+        "rq": 4,
+        "vth": 4,
+        "vq": 4
+    },
+
+    "Drosophila": {
+        "rth": 4,
+        "rq": 4,
+        "vth": 2,
+        "vq": 4
+    },
+
+    "C. elegans": {
+        "rth": 4,
+        "rq": 2,
+        "vth": 2,
+        "vq": 2
+    },
+}
+```
+
+The device-type parameters describe the fixed behavior of receptor and vesicle devices.
+
+They are distinct from the **inventories** of those devices.
+
+---
+
+# Species Configurations
+
+The current implementation provides four species configurations:
+
+```python
+SPECIES = {
+    "Human": ...,
+    "Mouse": ...,
+    "Drosophila": ...,
+    "C. elegans": ...,
+}
+```
+
+Each species configuration specifies the geometry, ionic density, compartment capacities, resting populations, diffusion parameters, allocation coefficients, and calibration fractions used by the model.
+
+For example, the Human configuration contains:
+
+```python
+"Human": dict(
+    d_endo=20_000.0,
+    d_ecto=20_080.0,
+
+    rho=RHO,
+    f=0.05,
+
+    C_endo=723_000_000,
+    C_ecto=5_800_000,
+
+    S_Bendo_0=36_000_000,
+    S_Becto_0=290_000,
+
+    D=36_290_000,
+
+    delta=2e-3,
+    gamma=8e-3,
+
+    alpha=0.5,
+    beta=0.5,
+    sigma=1.0,
+
+    f_rth=0.10,
+    f_rq=0.05,
+    f_vth=0.10,
+    f_vq=0.05,
+
+    two_cmp=True
+)
+```
+
+The corresponding configurations for Mouse, Drosophila, and C. elegans are defined in the same registry.
+
+---
+
+# Calibration Modes
+
+Two calibration modes are currently available:
+
+```python
+CAL_MODES = (
+    "pool",
+    "fixed"
+)
+```
+
+## Fixed
+
+```python
+cal_mode="fixed"
+```
+
+uses the registered device-type parameters.
+
+## Pool
+
+```python
+cal_mode="pool"
+```
+
+derives device parameters from fractions of the available ionic pools.
+
+This allows the model to be calibrated relative to the scale of the ionic state rather than exclusively through the fixed biological/device presets.
+
+---
+
+# Type Presets
+
+The implementation also provides simplified type presets:
+
+```python
+TYPE_PRESETS = {
+    "paper": None,
+
+    "low": {
+        "rth": 2,
+        "rq": 2,
+        "vth": 2,
+        "vq": 2
+    },
+
+    "mid": {
+        "rth": 4,
+        "rq": 4,
+        "vth": 4,
+        "vq": 4
+    },
+
+    "high": {
+        "rth": 8,
+        "rq": 8,
+        "vth": 8,
+        "vq": 8
+    },
+}
+```
+
+These presets are useful for experimentation with different stoichiometric scales.
+
+---
+
+# Creating an INN
+
+The model is a standard PyTorch module.
 
 ```python
 import torch
+
 from nirgen.inn.model import INN
 
 model = INN(
-    species="Na",
+    species="Human",
     n=4,
     m=2
 )
-
-print(model)
 ```
 
-Here:
-
-* `species` selects the ionic/device configuration;
-* `n=4` creates four input patches;
-* `m=2` creates two output patches.
-
-The model is a standard PyTorch `nn.Module`, so it can participate in normal PyTorch optimization workflows.
-
----
-
-# Running Inference
-
-Inputs are supplied as a PyTorch tensor.
-
-For four input patches and a batch of eight observations:
+The model can then be used like any other PyTorch module:
 
 ```python
-import torch
-from nirgen.inn.model import INN
+x = torch.randn(32, 4)
 
-model = INN(
-    species="Na",
-    n=4,
-    m=2
-)
-
-x = torch.randn(8, 4)
-
-with torch.no_grad():
-    y = model(x)
+y = model(x)
 
 print(y.shape)
-print(y)
 ```
 
-The expected output has one value for each output patch:
+For four input patches and two output patches, the resulting output is:
 
 ```text
-(batch_size, number_of_output_patches)
+torch.Size([32, 2])
 ```
-
-For this example:
-
-```text
-(8, 2)
-```
-
-The model performs the complete six-operation ionic computation internally.
 
 ---
 
 # Training with Adam
 
-Because `INN` is implemented as a PyTorch module, the trainable receptor and vesicle inventories can be optimized using standard PyTorch optimizers.
+The trainable quantities in the current implementation are the continuous relaxation variables associated with receptor and vesicle inventories.
 
-The following example uses **Adam**.
+This permits the discrete ionic computation to be optimized using gradient-based methods.
+
+The simplest training configuration uses Adam:
 
 ```python
 import torch
@@ -436,184 +530,113 @@ from torch import nn
 
 from nirgen.inn.model import INN
 
-# Construct the ionic neural network
+
 model = INN(
-    species="Na",
+    species="Human",
     n=4,
     m=2
 )
 
-# Adam optimizes the continuous relaxation parameters
 optimizer = torch.optim.Adam(
     model.parameters(),
     lr=1e-3
 )
 
 criterion = nn.MSELoss()
+```
 
-# Example training data
-x = torch.randn(256, 4)
-target = torch.randn(256, 2)
+A complete training loop is:
 
-for epoch in range(1000):
+```python
+x = torch.randn(1024, 4)
+target = torch.randn(1024, 2)
+
+for epoch in range(500):
 
     optimizer.zero_grad()
 
-    # Ionic forward pass
     prediction = model(x)
 
-    # Compare ionic output with target
-    loss = criterion(prediction, target)
+    loss = criterion(
+        prediction,
+        target
+    )
 
-    # Backpropagation through the straight-through
-    # discrete-state machinery
     loss.backward()
 
-    # Update receptor/vesicle relaxation parameters
     optimizer.step()
 
-    if epoch % 100 == 0:
+    if epoch % 50 == 0:
         print(
             f"epoch={epoch:04d} "
             f"loss={loss.item():.6f}"
         )
 ```
 
-The important point is that Adam does **not** directly turn the receptor inventories into arbitrary floating-point neural-network weights.
+Adam updates the continuous trainable parameters.
 
-The implementation maintains continuous relaxation variables and converts them to discrete inventories during the forward computation.
-
-Thus:
-
-```python
-model.r_tilde
-model.v_tilde
-```
-
-are the quantities Adam updates, while the ionic computation uses their discrete counterparts.
+The forward pass subsequently maps those continuous quantities into the discrete receptor and vesicle inventories used by the ionic computation.
 
 ---
 
-# Inspecting the Learned Inventories
+# Inspecting Learned Inventories
 
-After training, the learned receptor and vesicle inventories can be inspected directly.
+The learned continuous parameters can be inspected directly:
+
+```python
+print(model.r_tilde)
+print(model.v_tilde)
+```
+
+The corresponding discrete inventories can be obtained through the model's integer inventory functions:
 
 ```python
 with torch.no_grad():
-    receptors = model.r_int()
-    vesicles = model.v_int()
 
-print("Receptor inventories:")
-print(receptors)
+    receptor_inventory = model.r_int()
+    vesicle_inventory = model.v_int()
 
-print("Vesicle inventories:")
-print(vesicles)
+print(receptor_inventory)
+print(vesicle_inventory)
 ```
 
-These values represent the discrete number of computational devices available at each patch.
-
-The distinction is important:
+This distinction is fundamental to the current implementation:
 
 ```text
-r_tilde / v_tilde
-    continuous optimization variables
-
-        ↓
-
-r_int / v_int
-    discrete physical inventories
-
-        ↓
-
-ionic state transitions
+continuous relaxation
+        │
+        ▼
+straight-through discrete conversion
+        │
+        ▼
+integer receptor / vesicle inventory
+        │
+        ▼
+ionic state transition
 ```
-
----
-
-# Training with a Dataset
-
-The same approach can be used with a normal PyTorch `DataLoader`.
-
-```python
-import torch
-from torch import nn
-from torch.utils.data import DataLoader, TensorDataset
-
-from nirgen.inn.model import INN
-
-x = torch.randn(5000, 4)
-y = torch.randn(5000, 2)
-
-dataset = TensorDataset(x, y)
-
-loader = DataLoader(
-    dataset,
-    batch_size=64,
-    shuffle=True
-)
-
-model = INN(
-    species="Na",
-    n=4,
-    m=2
-)
-
-optimizer = torch.optim.Adam(
-    model.parameters(),
-    lr=1e-3
-)
-
-criterion = nn.MSELoss()
-
-for epoch in range(100):
-
-    running_loss = 0.0
-
-    for x_batch, y_batch in loader:
-
-        optimizer.zero_grad()
-
-        prediction = model(x_batch)
-
-        loss = criterion(
-            prediction,
-            y_batch
-        )
-
-        loss.backward()
-        optimizer.step()
-
-        running_loss += loss.item()
-
-    print(
-        f"epoch={epoch:03d} "
-        f"loss={running_loss / len(loader):.6f}"
-    )
-```
-
-Nothing in the training loop requires a conventional linear layer, convolution, attention mechanism, or activation function.
-
-The model itself defines the forward computation.
 
 ---
 
 # Regularization
 
-The model also exposes a regularization function for receptor and vesicle inventories:
+The model provides an inventory regularization term.
 
 ```python
-regularization = model.reg(
+reg_loss = model.reg(
     lam_r=1e-4,
     lam_v=1e-4
 )
 ```
 
-This can be incorporated into the training objective:
+It can be incorporated into the training objective:
 
 ```python
 prediction = model(x)
 
-data_loss = criterion(prediction, target)
+data_loss = criterion(
+    prediction,
+    target
+)
 
 reg_loss = model.reg(
     lam_r=1e-4,
@@ -626,155 +649,120 @@ loss.backward()
 optimizer.step()
 ```
 
-This provides a mechanism for penalizing larger receptor and vesicle inventories.
+This allows the optimization objective to penalize larger receptor and vesicle inventories.
 
 ---
 
-# Custom Diffusion Geometry
+# Inference
 
-The default model uses equal patch fractions.
+Once training is complete:
 
-The model can also be constructed using explicit diffusion fractions:
+```python
+model.eval()
+
+test_x = torch.randn(10, 4)
+
+with torch.no_grad():
+
+    prediction = model(test_x)
+
+print(prediction)
+```
+
+The model performs the complete ionic forward pass internally.
+
+No separate neural-network layers need to be constructed by the user.
+
+---
+
+# Conservation Audit
+
+The implementation includes a conservation audit:
+
+```python
+audit = model.conservation_check(x)
+
+for operation, total in audit.items():
+
+    print(
+        operation,
+        total
+    )
+```
+
+This is intended to make it possible to inspect the ionic population as it progresses through the computational schedule.
+
+Conservation is a central design principle of NIRGEN.
+
+When modifying the model, registry, stoichiometric parameters, or diffusion mechanism, the conservation audit can be used to identify unintended changes in the total tracked ionic resource.
+
+---
+
+# Readout
+
+The model supports two output readout modes.
+
+The Nernst-based readout is the default:
 
 ```python
 model = INN(
-    species="Na",
+    species="Human",
     n=4,
     m=2,
-    w_in_fracs=[0.25, 0.25],
-    w_out_fracs=[0.25, 0.25, 0.25, 0.25]
+    readout=1
 )
 ```
 
-The input and output fraction vectors must each sum to one.
-
-For example:
-
-```python
-sum([0.25, 0.25]) == 0.5
-```
-
-would **not** be valid for an output vector with two patches.
-
-Instead:
-
-```python
-w_in_fracs=[0.5, 0.5]
-```
-
-is valid.
-
-The fractions determine how the global ionic populations are apportioned across patches and how inward diffusion distributes ionic populations.
-
-The diffusion weights are fixed configuration parameters rather than learned weights.
-
----
-
-# Readout Modes
-
-The model supports two readout modes.
-
-The default is:
-
-```python
-readout=1
-```
-
-which uses the Nernst-based extracellular readout.
-
-A second mode is available:
-
-```python
-readout=2
-```
-
-which uses the signed extracellular/intracellular difference.
-
-For example:
+An alternative signed compartment-difference readout is:
 
 ```python
 model = INN(
-    species="Na",
+    species="Human",
     n=4,
     m=2,
     readout=2
 )
 ```
 
-This produces a two-dimensional output corresponding to the two output patches.
+The first mode uses the ionic concentration relationship underlying the Nernst equation.
+
+The second mode returns the signed difference between the extracellular and intracellular populations.
 
 ---
 
-# Calibration Modes
+# Custom Patch Geometry
 
-The implementation currently supports fixed and pool-based calibration modes.
-
-The default is:
-
-```python
-cal_mode="fixed"
-```
+The diffusion geometry can be configured using patch fractions.
 
 For example:
 
 ```python
 model = INN(
-    species="Na",
+    species="Human",
     n=4,
     m=2,
-    cal_mode="fixed"
+
+    w_in_fracs=[
+        0.50,
+        0.50
+    ],
+
+    w_out_fracs=[
+        0.25,
+        0.25,
+        0.25,
+        0.25
+    ]
 )
 ```
 
-The alternative pool-based mode is:
+The fractions determine how ionic populations are distributed across patches.
 
-```python
-model = INN(
-    species="Na",
-    n=4,
-    m=2,
-    cal_mode="pool"
-)
-```
-
-In fixed mode, receptor and vesicle type parameters are obtained from the configured device type.
-
-In pool mode, these quantities are derived from fractions of the available ionic pools.
-
-These modes are part of the current implementation and are intended to provide alternative ways of initializing/calibrating the ionic machinery.
+They are fixed configuration parameters rather than learned neural-network weights.
 
 ---
 
-# Inspecting Conservation
-
-The package provides a conservation audit:
-
-```python
-x = torch.randn(4, 4)
-
-audit = model.conservation_check(x)
-
-for operation, total in audit.items():
-    print(operation, total)
-```
-
-The audit reports the total tracked ionic population at each stage of the six-operation computation.
-
-This is useful when experimenting with:
-
-* new species;
-* new device configurations;
-* new patch geometries;
-* new stoichiometric parameters;
-* alternative calibration settings.
-
-Conservation is a central design principle of the ionic computation.
-
----
-
-# A Complete Minimal Example
-
-The following script constructs an INN, trains it with Adam, and evaluates it.
+# Complete Example
 
 ```python
 import torch
@@ -783,9 +771,9 @@ from torch import nn
 from nirgen.inn.model import INN
 
 
-# --------------------------------------------------
-# 1. Data
-# --------------------------------------------------
+# -----------------------------------------------
+# Data
+# -----------------------------------------------
 
 torch.manual_seed(42)
 
@@ -793,20 +781,20 @@ x = torch.randn(1024, 4)
 target = torch.randn(1024, 2)
 
 
-# --------------------------------------------------
-# 2. Ionic Neural Network
-# --------------------------------------------------
+# -----------------------------------------------
+# Ionic Neural Network
+# -----------------------------------------------
 
 model = INN(
-    species="Na",
+    species="Human",
     n=4,
     m=2
 )
 
 
-# --------------------------------------------------
-# 3. Optimizer
-# --------------------------------------------------
+# -----------------------------------------------
+# Adam optimizer
+# -----------------------------------------------
 
 optimizer = torch.optim.Adam(
     model.parameters(),
@@ -816,9 +804,9 @@ optimizer = torch.optim.Adam(
 criterion = nn.MSELoss()
 
 
-# --------------------------------------------------
-# 4. Training
-# --------------------------------------------------
+# -----------------------------------------------
+# Training
+# -----------------------------------------------
 
 for epoch in range(500):
 
@@ -826,9 +814,19 @@ for epoch in range(500):
 
     output = model(x)
 
-    loss = criterion(
+    data_loss = criterion(
         output,
         target
+    )
+
+    regularization = model.reg(
+        lam_r=1e-4,
+        lam_v=1e-4
+    )
+
+    loss = (
+        data_loss
+        + regularization
     )
 
     loss.backward()
@@ -843,24 +841,32 @@ for epoch in range(500):
         )
 
 
-# --------------------------------------------------
-# 5. Inspect learned physical inventories
-# --------------------------------------------------
+# -----------------------------------------------
+# Learned inventories
+# -----------------------------------------------
+
+with torch.no_grad():
+
+    receptors = model.r_int()
+    vesicles = model.v_int()
 
 print("\nReceptor inventories:")
-print(model.r_int())
+print(receptors)
 
 print("\nVesicle inventories:")
-print(model.v_int())
+print(vesicles)
 
 
-# --------------------------------------------------
-# 6. Inference
-# --------------------------------------------------
+# -----------------------------------------------
+# Inference
+# -----------------------------------------------
+
+model.eval()
 
 test_x = torch.randn(10, 4)
 
 with torch.no_grad():
+
     prediction = model(test_x)
 
 print("\nPrediction:")
@@ -869,107 +875,183 @@ print(prediction)
 
 ---
 
-# Why This Is Different From a Conventional Neural Network
+# Design Philosophy
 
-An INN should not be interpreted simply as a conventional neural network with biological terminology substituted for standard layers.
+NIRGEN is intended to explore a different computational abstraction for neural systems.
 
-The computational primitive is different.
+The central question is not simply:
 
-A conventional network might contain:
+> How can a function approximate a target?
 
-```text
-input
-  ↓
-matrix multiplication
-  ↓
-activation function
-  ↓
-matrix multiplication
-  ↓
-output
-```
+Instead, the architecture asks:
 
-An INN instead performs:
+> Can computation be represented as the evolution of a bounded physical state subject to resource, capacity, stoichiometric, and conservation constraints?
+
+The current INN implementation therefore makes several quantities that are normally hidden inside neural-network mathematics explicit:
 
 ```text
-input perturbation
-  ↓
-ionic partition
-  ↓
-receptor activation
-  ↓
-ion translocation
-  ↓
-diffusion
-  ↓
-ionic partition
-  ↓
-vesicle activation
-  ↓
-ion extrusion
-  ↓
-readout
+RESOURCE
+    ions
+
+STATE
+    ionic populations
+
+BOUNDARIES
+    ecto / endo compartments
+
+DEVICES
+    receptors / vesicles
+
+STOICHIOMETRY
+    thresholds / quanta
+
+CAPACITY
+    finite compartment sizes
+
+DYNAMICS
+    discrete state transitions
+
+TRANSPORT
+    diffusion / translocation
+
+LEARNING
+    optimization of device inventories
 ```
 
-The constraints are therefore part of the computation.
+The resulting system is not intended to be interpreted simply as a conventional neural network with biological terminology.
 
-For example, increasing the receptor inventory does not necessarily increase the output. If another constraint is binding, additional receptors have no effect.
-
-Likewise, increasing the vesicle inventory does not necessarily increase output if the available activation ions, flux ions, or extracellular capacity are limiting.
-
-This produces a computational system in which **resource availability is itself part of the state of the machine**.
+It is an experimental computational architecture based on discrete ionic state dynamics.
 
 ---
 
-# Current Scope
+# Current Implementation Scope
 
-The current repository implements the core single-cell INN computation.
-
-In particular, it currently provides:
+This repository currently provides the core single-cell INN implementation, including:
 
 * discrete ionic state variables;
-* bounded extracellular and intracellular compartments;
+* extracellular and intracellular compartments;
+* bounded compartment capacities;
 * input perturbation;
-* stoichiometric splitting;
+* α/β stoichiometric partitioning;
 * receptor activation;
 * receptor translocation;
 * inward diffusion;
-* output stoichiometric splitting;
+* output stoichiometric partitioning;
 * vesicle activation;
 * vesicle exocytosis;
-* Nernst-based readout;
-* discrete receptor and vesicle inventories;
-* straight-through optimization of discrete inventories;
-* PyTorch/Adam-compatible training;
+* Nernst-based computation;
+* discrete receptor inventories;
+* discrete vesicle inventories;
+* straight-through optimization;
+* Adam-compatible training;
 * inventory regularization;
 * conservation auditing;
-* configurable patch fractions;
-* configurable calibration modes.
+* species-specific configurations;
+* biological/device presets;
+* fixed and pool calibration modes;
+* configurable patch fractions.
 
-The implementation should be regarded as a research implementation and experimental computational framework rather than as a validated biological simulation.
+The repository should currently be considered a **research implementation / computational prototype**.
 
-The goal is to investigate whether a computational architecture grounded in discrete resource dynamics, bounded state spaces, stoichiometric constraints, and event-driven state transitions can serve as a useful alternative neural-computation paradigm.
+It is not a validated biophysical simulation of a biological neuron.
+
+Its purpose is to provide an executable implementation of the NIRGEN computational abstraction and a foundation for experimentation with ionic neural computation.
+
+---
+
+# Repository Structure
+
+A typical installation contains:
+
+```text
+nirgen/
+│
+├── nirgen/
+│   └── inn/
+│       ├── model.py
+│       └── registry.py
+│
+├── docs/
+│   └── inn_architecture.svg
+│
+├── tests/
+│
+├── pyproject.toml
+└── README.md
+```
+
+The most important files for understanding the implementation are:
+
+```text
+nirgen/inn/model.py
+```
+
+The computational mechanics and PyTorch model.
+
+```text
+nirgen/inn/registry.py
+```
+
+The species, device, calibration, and stoichiometric registries.
+
+```text
+docs/inn_architecture.svg
+```
+
+The architectural illustration.
+
+---
+
+# Installation
+
+Clone the repository:
+
+```bash
+git clone https://github.com/drmylesgarveylabs/nirgen.git
+
+cd nirgen
+```
+
+Install in editable mode:
+
+```bash
+pip install -e .
+```
+
+Or install directly from GitHub:
+
+```bash
+pip install git+https://github.com/drmylesgarveylabs/nirgen.git
+```
+
+---
+
+# Status
+
+NIRGEN is under active development.
+
+The mathematical formulation and implementation are evolving together. The repository therefore intentionally exposes the underlying mechanisms rather than hiding them behind a high-level neural-network API.
+
+Contributions, experiments, alternative species configurations, device configurations, diffusion mechanisms, and independent validation are welcome.
 
 ---
 
 # Citation
 
-If you use NIRGEN in academic work, please cite the associated paper/preprint:
+If you use NIRGEN in academic work, please be so kind to cite the associated manuscript (which I will be publishing as a pre-print in a few days):
 
-> Garvey, M. D. *NIRGEN: Discrete Transmembrane Particle Dynamics and Bounded State-Space Computation.*
+**Garvey, M. D. — Shadows of Consciousness: An Investigation into Ionic Neural Networks Using the Neurotransmitter Ion Receptor Glial Endocannabinoid Network (NIRGEN) Paradigm**
 
-See the accompanying manuscript for the formal mathematical definition of the model, state space, transition operators, diffusion functions, activation constraints, training formulation, and conservation framework.
+The manuscript contains the formal mathematical definition of the state space, transition operators, receptor and vesicle constraints, diffusion operators, readout mechanisms, and training formulation.
 
 ---
 
 # License
 
-See the repository license for the terms governing use and redistribution.
+See the repository license for terms governing use and redistribution.
 
 ---
 
 # Repository
-
-Source code:
 
 https://github.com/drmylesgarveylabs/nirgen
