@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nirgen"
+version = "0.1.0"
+description = "Discrete-ion neural computation and the Ionic Neural Network (INN)"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.23",
+    "torch>=2.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/drmylesgarveylabs/chasingprophets"
+Repository = "https://github.com/drmylesgarveylabs/chasingprophets"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["nirgen*"]
+
