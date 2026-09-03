@@ -1,8 +1,8 @@
-# NIRGEN
+# The Ion Neural Network (INN): The First Model Class of Neurotransmitter Ion Receptor Glial Endocannabinoid Network Models
 
 ## Discrete-Ion Neural Computation
 
-**NIRGEN** is a Python/PyTorch implementation of an **Ionic Neural Network (INN)**: a neural computation framework in which computation is represented through the discrete movement, accumulation, partitioning, and release of ionic resources within a bounded cellular system.
+**nirgen** is a Python/PyTorch implementation of the Neurotransmitter Ion Receptor Glial Endocannabinoid Network Models an **Ionic Neural Network (INN)**: a neural computation framework in which computation is represented through the discrete movement, accumulation, partitioning, and release of ionic resources within a bounded cellular system.
 
 Rather than representing a neuron primarily as a sequence of matrix multiplications and nonlinear activation functions, NIRGEN represents a computational unit as a constrained physical system.
 
