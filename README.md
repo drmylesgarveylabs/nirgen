@@ -90,22 +90,6 @@ The computational system can be visualized as:
                            OUTPUT
 ```
 
-For a publication-quality illustration, see `docs/inn_architecture.svg`.
-
-The SVG can be embedded directly into this README:
-
-```html
-<p align="center">
-  <img
-    src="docs/inn_architecture.svg"
-    alt="NIRGEN Ionic Neural Network architecture"
-    width="900"
-  >
-</p>
-```
-
-GitHub will render the SVG directly from the repository.
-
 ---
 
 # Core State
